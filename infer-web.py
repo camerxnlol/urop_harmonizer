@@ -1,6 +1,7 @@
 import os
 import sys
 from dotenv import load_dotenv
+from basic_pitch.inference import predict
 
 now_dir = os.getcwd()
 sys.path.append(now_dir)
@@ -33,7 +34,7 @@ import shutil
 import logging
 
 
-logging.getLogger("numba").setLevel(logging.WARNING)
+logging.getLogger("numba").setLevel(logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,37 @@ def preprocess_dataset(trainset_dir, exp_dir, sr, n_p):
         log = f.read()
     logger.info(log)
     yield log
+
+
+def harmonizer(model, audio_input, transpose1=0, transpose2=0, transpose3=0):
+    # model_output, midi_data, note_events = predict(audio_input[1])
+    # print(model_output)
+
+    audio = None
+    _, _, _, _, index = vc.get_vc(model, 0.33, 0.33)
+    index = index["value"]
+    if index is not None:
+        print(audio_input)
+        out1, audio1 = vc.vc_single(0, audio_input, 0, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+        out2, audio2 = vc.vc_single(0, audio_input, transpose1, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+        out3, audio3 = vc.vc_single(0, audio_input, transpose2, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+        out4, audio4 = vc.vc_single(0, audio_input, transpose3, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+        out = out1 + out2 + out3  + out4
+
+        sr, audio1 = audio1
+        _, audio2 = audio2
+        _, audio3 = audio3
+        _, audio4 = audio4
+
+        audio = audio1*.25 + audio2*.25 + audio3*.25 + audio4*.25
+        # Prevent clipping by normalizing
+        # max_val = np.max(np.abs(audio))
+        # if max_val > 1.0:
+        #     audio = audio / max_val
+        # print(max_val)
+        np.save("audio.npy", audio)
+        print(out)
+    return "success", (sr, audio)
 
 
 # but2.click(extract_f0,[gpus6,np7,f0method8,if_f0_3,trainset_dir4],[info2])
@@ -814,12 +846,13 @@ with gr.Blocks(title="RVC WebUI") as app:
                                 label=i18n("变调(整数, 半音数量, 升八度12降八度-12)"),
                                 value=0,
                             )
-                            input_audio0 = gr.Textbox(
-                                label=i18n(
-                                    "输入待处理音频文件路径(默认是正确格式示例)"
-                                ),
-                                placeholder="C:\\Users\\Desktop\\audio_example.wav",
-                            )
+                            # input_audio0 = gr.Textbox(
+                            #     label=i18n(
+                            #         "输入待处理音频文件路径(默认是正确格式示例)"
+                            #     ),
+                            #     placeholder="C:\\Users\\Desktop\\audio_example.wav",
+                            # )
+                            input_audio0 = gr.Microphone(label="Audio to convert", interactive=True)
                             file_index1 = gr.Textbox(
                                 label=i18n(
                                     "特征检索库文件路径,为空则使用下拉的选择结果"
@@ -1081,6 +1114,39 @@ with gr.Blocks(title="RVC WebUI") as app:
                     inputs=[sid0, protect0, protect1],
                     outputs=[spk_item, protect0, protect1, file_index2, file_index4],
                     api_name="infer_change_voice",
+                )
+        with gr.TabItem("Harmonizer"):
+            gr.Markdown("1 voice -> 4 voices")
+            with gr.Row():
+                model = gr.Dropdown(label="Voice to convert to (temporary)", choices=sorted(names), interactive=True)
+                refresh_button = gr.Button(value="Refresh voice lists", variant="primary")
+                refresh_button.click(
+                    fn=change_choices,
+                    inputs=[],
+                    outputs=[model],
+                    api_name="infer_refresh",
+                )
+            with gr.Row():
+                transpose1 = gr.Number(label="Transpose second voice", value=0)
+                transpose2 = gr.Number(label="Transpose third voice", value=0)
+                transpose3 = gr.Number(label="Transpose fourth voice", value=0)
+            with gr.Row():
+                audio_input = gr.Microphone(label="Audio to convert", interactive=True)
+                convert_button = gr.Button(value="Convert!", variant="primary")
+            with gr.Row():
+                output1 = gr.Textbox(label="Output information", interactive=False)
+                output2 = gr.Audio(label="Output audio", interactive=False)
+                convert_button.click(
+                    fn=harmonizer,
+                    inputs=[
+                        model,
+                        audio_input,
+                        transpose1,
+                        transpose2,
+                        transpose3,
+                    ],
+                    outputs=[output1, output2],
+                    api_name="harmonizer",
                 )
         with gr.TabItem(i18n("伴奏人声分离&去混响&去回声")):
             with gr.Group():

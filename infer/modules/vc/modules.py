@@ -17,7 +17,7 @@ from infer.lib.infer_pack.models import (
 )
 from infer.modules.vc.pipeline import Pipeline
 from infer.modules.vc.utils import *
-
+import tempfile
 
 class VC:
     def __init__(self, config):
@@ -162,7 +162,13 @@ class VC:
             return "You need to upload an audio", None
         f0_up_key = int(f0_up_key)
         try:
-            audio = load_audio(input_audio_path, 16000)
+            if isinstance(input_audio_path, str):
+                audio = load_audio(input_audio_path, 16000)
+            else:
+                with tempfile.NamedTemporaryFile(delete=True, suffix=".wav") as temp:
+                    r, y = input_audio_path
+                    sf.write(temp.name, y, r)
+                    audio = load_audio(temp.name, 16000)
             audio_max = np.abs(audio).max() / 0.95
             if audio_max > 1:
                 audio /= audio_max
