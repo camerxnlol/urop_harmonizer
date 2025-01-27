@@ -257,9 +257,9 @@ def preprocess_dataset(trainset_dir, exp_dir, sr, n_p):
     yield log
 
 
-def harmonizer(audio_input):
-    # model_output, midi_data, note_events = predict(audio_input[1])
-    # print(model_output)
+def harmonizer(model, audio_input, transpose1=0, transpose2=0, transpose3=0):
+    model_output, midi_data, note_events = predict(audio_input[1])
+    print(model_output)
 
     audio = None
     _, _, _, _, index = vc.get_vc("Jacob-Collier.pth", 0.33, 0.33)
