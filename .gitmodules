@@ -1,0 +1,3 @@
+[submodule "choraleModel/anticipation"]
+	path = choraleModel/anticipation
+	url = git@github.com:lancelotblanchard/anticipation.git

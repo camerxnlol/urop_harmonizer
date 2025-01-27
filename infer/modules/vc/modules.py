@@ -160,7 +160,8 @@ class VC:
     ):
         if input_audio_path is None:
             return "You need to upload an audio", None
-        f0_up_key = int(f0_up_key)
+        if not hasattr(f0_up_key, '__call__'):
+            f0_up_key = int(f0_up_key)
         try:
             if isinstance(input_audio_path, str):
                 audio = load_audio(input_audio_path, 16000)

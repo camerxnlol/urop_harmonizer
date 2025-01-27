@@ -2,6 +2,13 @@ import os
 import sys
 from dotenv import load_dotenv
 from basic_pitch.inference import predict
+import tempfile
+import soundfile as sf
+from anticipation.sample import add_token
+from anticipation.vocab import DUR_OFFSET, NOTE_OFFSET, CONTROL_OFFSET, ANTICIPATE
+from anticipation.convert import events_to_midi
+from tqdm import tqdm
+from functools import partial
 
 now_dir = os.getcwd()
 sys.path.append(now_dir)
@@ -52,6 +59,10 @@ torch.manual_seed(114514)
 
 config = Config()
 vc = VC(config)
+
+from transformers import GPT2LMHeadModel
+
+amtModel = GPT2LMHeadModel.from_pretrained("choraleModel/jsbChorales-1000", attn_implementation="eager")
 
 
 if config.dml == True:
@@ -246,19 +257,79 @@ def preprocess_dataset(trainset_dir, exp_dir, sr, n_p):
     yield log
 
 
-def harmonizer(model, audio_input, transpose1=0, transpose2=0, transpose3=0):
+def harmonizer(audio_input):
     # model_output, midi_data, note_events = predict(audio_input[1])
     # print(model_output)
 
     audio = None
-    _, _, _, _, index = vc.get_vc(model, 0.33, 0.33)
+    _, _, _, _, index = vc.get_vc("Jacob-Collier.pth", 0.33, 0.33)
     index = index["value"]
     if index is not None:
+        print("Predicting")
         print(audio_input)
         out1, audio1 = vc.vc_single(0, audio_input, 0, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
-        out2, audio2 = vc.vc_single(0, audio_input, transpose1, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
-        out3, audio3 = vc.vc_single(0, audio_input, transpose2, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
-        out4, audio4 = vc.vc_single(0, audio_input, transpose3, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+
+        # Basic Pitch
+        if isinstance(audio_input, str):
+            _, midi, _ = predict(audio_input, frame_threshold=0.5)
+        else:
+            with tempfile.NamedTemporaryFile(delete=True, suffix=".wav") as temp:
+                r, y = audio_input
+                sf.write(temp.name, y, r)
+                _, midi, _ = predict(temp.name, frame_threshold=0.5)
+
+        # to AMT tokens
+        melody = []
+        for note in midi.instruments[0].notes:
+            t = int(note.start*100)
+            d = DUR_OFFSET + (int(note.end*100) - t)
+            n = NOTE_OFFSET + note.pitch
+            # ensure monophony. If this note overlaps, make one long note instead
+            if len(melody) >= 3 and melody[-3] + (melody[-2] - DUR_OFFSET) >= t:
+                overlap = melody[-3] + (melody[-2] - DUR_OFFSET) - t
+                totalDuration = (melody[-2] - DUR_OFFSET) + (d - DUR_OFFSET)
+                melody[-2] = DUR_OFFSET + (totalDuration - overlap)
+            else:
+                melody.extend([t, d, n])
+
+        # Generate harmonies
+        z = [ANTICIPATE]
+        top_p = 0.98
+        tokens = []
+        result = []
+        harmonies = [[],[],[]]
+        current_time = 0
+        melody = [CONTROL_OFFSET+x for x in melody]
+
+        # we generate 3 new notes (instrs 1,2,3) for each note in the melody
+        for t, d, n in tqdm(zip(melody[::3], melody[1::3], melody[2::3]), total=len(melody)//3):
+            tokens.extend([t, d, n])
+            result.extend([t-CONTROL_OFFSET, d-CONTROL_OFFSET, n-CONTROL_OFFSET])
+            for instr in [1,2,3]:
+                new_token = add_token(amtModel, z, tokens, top_p, current_time, active_instruments=[instr], forceTime=t-CONTROL_OFFSET, forceDuration=d-CONTROL_OFFSET)
+                tokens.extend(new_token)
+                result.extend(new_token)
+                current_time = new_token[0]
+
+                # save harmony
+                originalNote = n - CONTROL_OFFSET - NOTE_OFFSET
+                generatedNote = (new_token[2] - NOTE_OFFSET) - (2**7)*instr
+                diff = generatedNote - originalNote
+                harmonies[instr-1].append((new_token[0], diff))
+
+        events_to_midi(result).save("tmp.mid")
+        
+        def transpose_func(i, f0):
+            for j in range(len(harmonies[i])-1):
+                t1, h1 = harmonies[i][j]
+                t2, h2 = harmonies[i][j+1]
+                f0[100+t1:100+t2] *= pow(2, h1/12)
+
+            f0[100+t2:] *= pow(2, h2/12)
+
+        out2, audio2 = vc.vc_single(0, audio_input, partial(transpose_func, 0), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+        out3, audio3 = vc.vc_single(0, audio_input, partial(transpose_func, 1), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+        out4, audio4 = vc.vc_single(0, audio_input, partial(transpose_func, 2), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
         out = out1 + out2 + out3  + out4
 
         sr, audio1 = audio1
@@ -1117,21 +1188,21 @@ with gr.Blocks(title="RVC WebUI") as app:
                 )
         with gr.TabItem("Harmonizer"):
             gr.Markdown("1 voice -> 4 voices")
+            # with gr.Row():
+            #     model = gr.Dropdown(label="Voice to convert to (temporary)", choices=sorted(names), interactive=True)
+            #     refresh_button = gr.Button(value="Refresh voice lists", variant="primary")
+            #     refresh_button.click(
+            #         fn=change_choices,
+            #         inputs=[],
+            #         outputs=[model],
+            #         api_name="infer_refresh",
+            #     )
+            # with gr.Row():
+            #     transpose1 = gr.Number(label="Transpose second voice", value=0)
+            #     transpose2 = gr.Number(label="Transpose third voice", value=0)
+            #     transpose3 = gr.Number(label="Transpose fourth voice", value=0)
             with gr.Row():
-                model = gr.Dropdown(label="Voice to convert to (temporary)", choices=sorted(names), interactive=True)
-                refresh_button = gr.Button(value="Refresh voice lists", variant="primary")
-                refresh_button.click(
-                    fn=change_choices,
-                    inputs=[],
-                    outputs=[model],
-                    api_name="infer_refresh",
-                )
-            with gr.Row():
-                transpose1 = gr.Number(label="Transpose second voice", value=0)
-                transpose2 = gr.Number(label="Transpose third voice", value=0)
-                transpose3 = gr.Number(label="Transpose fourth voice", value=0)
-            with gr.Row():
-                audio_input = gr.Microphone(label="Audio to convert", interactive=True)
+                audio_input = gr.Audio(label="Audio to convert", interactive=True)
                 convert_button = gr.Button(value="Convert!", variant="primary")
             with gr.Row():
                 output1 = gr.Textbox(label="Output information", interactive=False)
@@ -1139,11 +1210,7 @@ with gr.Blocks(title="RVC WebUI") as app:
                 convert_button.click(
                     fn=harmonizer,
                     inputs=[
-                        model,
                         audio_input,
-                        transpose1,
-                        transpose2,
-                        transpose3,
                     ],
                     outputs=[output1, output2],
                     api_name="harmonizer",
@@ -1647,9 +1714,9 @@ with gr.Blocks(title="RVC WebUI") as app:
                 gr.Markdown(traceback.format_exc())
 
     if config.iscolab:
-        app.queue(concurrency_count=511, max_size=1022).launch(share=True)
+        app.queue(max_size=1022).launch(share=True) # concurrency_count=511 in gradio==3.34
     else:
-        app.queue(concurrency_count=511, max_size=1022).launch(
+        app.queue(max_size=1022).launch(  # concurrency_count=511 in gradio==3.34
             server_name="0.0.0.0",
             inbrowser=not config.noautoopen,
             server_port=config.listen_port,

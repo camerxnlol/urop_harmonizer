@@ -158,7 +158,10 @@ class Pipeline(object):
                 del self.model_rmvpe
                 logger.info("Cleaning ortruntime memory")
 
-        f0 *= pow(2, f0_up_key / 12)
+        if hasattr(f0_up_key, '__call__'):
+            f0_up_key(f0)
+        else:
+            f0 *= pow(2, f0_up_key / 12)
         # with open("test.txt","w")as f:f.write("\n".join([str(i)for i in f0.tolist()]))
         tf0 = self.sr // self.window  # 每秒f0点数
         if inp_f0 is not None:
