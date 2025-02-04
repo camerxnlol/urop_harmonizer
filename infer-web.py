@@ -41,7 +41,7 @@ import shutil
 import logging
 
 
-logging.getLogger("numba").setLevel(logging.DEBUG)
+logging.getLogger("numba").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +60,41 @@ torch.manual_seed(114514)
 config = Config()
 vc = VC(config)
 
+timeLogger = None
+if config.time:
+    from time import perf_counter
+    timeLogger = logging.getLogger("time")
+    timeLogger.setLevel(logging.INFO)
+    timeLogFileHandler = logging.FileHandler("time.log")
+    timeLogFileHandler.setLevel(logging.INFO)
+    timeLogFileHandler.setFormatter(logging.Formatter("%(asctime)s - %(name)s: %(message)s"))
+    timeLogger.addHandler(timeLogFileHandler)
+
+def timeLog(msg):
+    if timeLogger:
+        timeLogger.info(msg)
+
+t1, t2 = None, None
+def startTime():
+    global t1
+    if timeLogger:
+        t1 = perf_counter()
+
+def stopTime():
+    global t2
+    if timeLogger:
+        t2 = perf_counter()
+
 from transformers import GPT2LMHeadModel
 
 amtModel = GPT2LMHeadModel.from_pretrained("choraleModel/jsbChorales-1000", attn_implementation="eager")
+device = "cpu"
+if torch.cuda.is_available():
+    device = "cuda"
+elif torch.backends.mps.is_available():
+    device = "mps"
 
+amtModel = amtModel.to(device)
 
 if config.dml == True:
 
@@ -258,15 +289,27 @@ def preprocess_dataset(trainset_dir, exp_dir, sr, n_p):
 
 
 def harmonizer(audio_input, transpose=0, predict_frame_threshold=0.5):
+    sid = "Jacob-Collier.pth"
+
+    timeLog("==== HARMONIZER RUN ====")
+    timeLog(f"AMT Model running on {amtModel.device}")
+    timeLog(f"VC Model running on {vc.config.device}")
+
     audio = None
-    _, _, _, _, index = vc.get_vc("Jacob-Collier.pth", 0.33, 0.33)
+
+    startTime()
+    _, _, _, _, index = vc.get_vc(sid, 0.33, 0.33)
+    stopTime()
+    timeLog(f"Model load ({sid}): {t2-t1}")
+
     index = index["value"]
     if index is not None:
         print("Predicting")
         print(audio_input)
-        out1, audio1 = vc.vc_single(0, audio_input, transpose, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+        out1, audio1 = vc.vc_single(0, audio_input, transpose, None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33, timeLog)
 
         # Basic Pitch
+        startTime()
         if isinstance(audio_input, str):
             _, midi, _ = predict(audio_input, frame_threshold=predict_frame_threshold)
         else:
@@ -274,13 +317,15 @@ def harmonizer(audio_input, transpose=0, predict_frame_threshold=0.5):
                 r, y = audio_input
                 sf.write(temp.name, y, r)
                 _, midi, _ = predict(temp.name, frame_threshold=predict_frame_threshold)
+        stopTime()
+        timeLog(f"Basic Pitch prediction: {t2-t1}")
 
         # to AMT tokens
         melody = []
         for note in midi.instruments[0].notes:
             t = int(note.start*100)
             d = DUR_OFFSET + (int(note.end*100) - t)
-            n = NOTE_OFFSET + note.pitch + transpose
+            n = int(NOTE_OFFSET + note.pitch + transpose)
             # ensure monophony. If this note overlaps, make one long note instead
             if len(melody) >= 3 and melody[-3] + (melody[-2] - DUR_OFFSET) >= t:
                 overlap = melody[-3] + (melody[-2] - DUR_OFFSET) - t
@@ -300,6 +345,7 @@ def harmonizer(audio_input, transpose=0, predict_frame_threshold=0.5):
         # anticipate everything
         tokens.extend(melody)
 
+        startTime()
         # we generate 3 new notes (instrs 1,2,3) for each note in the melody
         for t, d, n in tqdm(zip(melody[::3], melody[1::3], melody[2::3]), total=len(melody)//3):
             # tokens.extend([t, d, n])
@@ -316,6 +362,9 @@ def harmonizer(audio_input, transpose=0, predict_frame_threshold=0.5):
                 diff = generatedNote - originalNote
                 harmonies[instr-1].append((new_token[0], diff))
 
+        stopTime()
+        timeLog(f"AMT Inference: {t2-t1}")
+
         events_to_midi(result).save("tmp.mid")
         
         def transpose_func(i, f0):
@@ -326,9 +375,9 @@ def harmonizer(audio_input, transpose=0, predict_frame_threshold=0.5):
 
             f0[100+t2:] *= pow(2, (transpose+h1)/12)
 
-        out2, audio2 = vc.vc_single(0, audio_input, partial(transpose_func, 0), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
-        out3, audio3 = vc.vc_single(0, audio_input, partial(transpose_func, 1), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
-        out4, audio4 = vc.vc_single(0, audio_input, partial(transpose_func, 2), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33)
+        out2, audio2 = vc.vc_single(0, audio_input, partial(transpose_func, 0), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33, timeLog)
+        out3, audio3 = vc.vc_single(0, audio_input, partial(transpose_func, 1), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33, timeLog)
+        out4, audio4 = vc.vc_single(0, audio_input, partial(transpose_func, 2), None, "rmvpe", "", index, 0.75, 3, 0, 0.25, 0.33, timeLog)
         out = out1 + out2 + out3  + out4
 
         sr, audio1 = audio1
