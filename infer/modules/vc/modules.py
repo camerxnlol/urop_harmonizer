@@ -157,6 +157,7 @@ class VC:
         resample_sr,
         rms_mix_rate,
         protect,
+        timeLog=None
     ):
         if input_audio_path is None:
             return "You need to upload an audio", None
@@ -221,6 +222,10 @@ class VC:
                 if os.path.exists(file_index)
                 else "Index not used."
             )
+            if timeLog:
+                timeLog(f"HuBERT Feature Calculation + Indexing: {times[0]}")
+                timeLog(f"f0 Calculation: {times[1]}")
+                timeLog(f"HiFi-GAN Inference: {times[0]}")
             return (
                 "Success.\n%s\nTime:\nnpy: %.2fs, f0: %.2fs, infer: %.2fs."
                 % (index_info, *times),

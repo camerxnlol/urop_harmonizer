@@ -1718,7 +1718,7 @@ with gr.Blocks(title="RVC WebUI") as app:
     else:
         app.queue(max_size=1022).launch(  # concurrency_count=511 in gradio==3.34
             server_name="0.0.0.0",
-            inbrowser=not config.noautoopen,
+            inbrowser=False,
             server_port=config.listen_port,
             quiet=True,
         )
